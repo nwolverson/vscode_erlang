@@ -1,6 +1,6 @@
 -module(lsp_syntax).
 
--export([parse_source_file/2, validate_parsed_source_file/1, parse_config_file/2, file_syntax_tree/1, module_syntax_tree/1]).
+-export([parse_source_file/2, validate_parsed_source_file/1, compile_source_file/1, parse_config_file/2, file_syntax_tree/1, module_syntax_tree/1]).
 
 parse_source_file(File, ContentsFile) ->
     case epp_parse_file(ContentsFile, get_include_path(File), get_define_from_rebar_config(File)) of
@@ -190,6 +190,109 @@ abspath(BaseDir, Path) ->
             filename:absname_join(BaseDir, Path);
         _ ->
             Path
+    end.
+
+%%%-----------------------------------------------------------------------------
+%%% Code to try to mimic the logic in rebar3 as to where beam files are saved
+%%%-----------------------------------------------------------------------------
+find_rebar3_beam_dir(ErlFilePath) ->
+  Clean = cleanpath(ErlFilePath),
+  SrcDir = filename:dirname(Clean),
+  Parts = filename:split(SrcDir),
+  Location = find_rebar3_beam_dir_(lists:reverse(Parts), undefined),
+  error_logger:info_msg("Guessed at ~p for ~p", [Location, ErlFilePath]),
+  Location.
+
+find_rebar3_beam_dir_(Parts = [_AppName, "lib", "default", "_build" | _Root], _MaybeAppName) ->
+  parts_to_path(["ebin" | Parts]);
+
+find_rebar3_beam_dir_(Parts = ["src" | T], MaybeAppName) ->
+  error_logger:info_msg("In src dir ~p ", [Parts]),
+  BasePath = parts_to_path(T),
+
+  %% Is there an ebin directory that is a peer of src?
+  PotentialPath = parts_to_path(["ebin" | T]),
+  case filelib:is_dir(PotentialPath) of
+    true -> PotentialPath;
+    false ->
+      %% Is there an app.src file?
+      case filelib:wildcard(BasePath ++ "/src/*.app.src") of
+        [AppFile] ->
+          %% We have found the name of our OTP application
+          find_rebar3_beam_dir_(T, appsrc_filename_to_app_name(AppFile));
+        _ ->
+          find_rebar3_beam_dir_(T, MaybeAppName)
+      end
+  end;
+
+
+find_rebar3_beam_dir_([_ | T], undefined) ->
+  find_rebar3_beam_dir_(T, undefined);
+
+find_rebar3_beam_dir_(Parts = [_ | T], AppName) ->
+  PotentialPath = parts_to_path(["ebin", AppName, "lib", "default", "_build" | Parts]),
+  case filelib:is_dir(PotentialPath) of
+    true -> PotentialPath;
+    false -> find_rebar3_beam_dir_(T, AppName)
+  end;
+
+find_rebar3_beam_dir_([], _MaybeAppName) ->
+  error_logger:info_msg("_MaybeAppName ~p~n", [_MaybeAppName]),
+  "/tmp".
+
+
+
+appsrc_filename_to_app_name(Filename) ->
+  StillWithDotApp = erl_filename_to_module_name(Filename),
+  filename:rootname(StillWithDotApp).
+
+
+erl_filename_to_module_name(Filename) ->
+  filename:rootname(filename:basename(Filename)).
+
+parts_to_path(Parts) ->
+  lists:flatten(lists:join("/", lists:reverse(Parts))).
+
+cleanpath(Path) ->
+  cleanpath(filename:split(Path), []).
+
+cleanpath([], Acc) ->
+  filename:join(lists:reverse(Acc));
+
+cleanpath([Dot | T], Acc) when Dot == "."; Dot == <<".">> ->
+  cleanpath(T, Acc);
+
+cleanpath([DotDot | T], Acc=[_]) when DotDot == ".."; DotDot == <<"..">> ->
+  cleanpath(T, Acc);
+
+cleanpath([DotDot | T], [_|Acc]) when DotDot == ".."; DotDot == <<"..">> ->
+  cleanpath(T, Acc);
+
+cleanpath([Segment | T], Acc) ->
+  cleanpath(T, [Segment | Acc]).
+
+filename_to_outdir(File) ->
+  find_rebar3_beam_dir(File).
+
+compile_source_file(File) ->
+    CompileOpts = [
+        binary,
+        debug_info
+    ],
+    case compile:file(File, CompileOpts) of 
+        {ok, Mod, Bin} ->
+            OutDir = filename_to_outdir(File),
+            OutFile = filename:join(OutDir, atom_to_list(Mod)),
+            OutBeamFile = OutFile ++ ".beam",
+            case file:write_file(OutBeamFile, Bin) of
+                ok -> gen_lsp_server:lsp_log("Wrote output file ~p", [OutBeamFile]), ok;
+                {error, _} = Err ->
+                    error_logger:error_msg("(~p) Failed to write ~p: ~p",
+                                        [node(), OutFile, Err]),
+                    Err
+            end;
+        error -> error_logger:info_msg("Not writing beam file for ~p due to error", [File]), ok;
+        Z -> error_logger:error_msg("Failed to write beam file for ~p due to ~p", [File, Z]), ok
     end.
 
 lint(FileSyntaxTree, File) ->

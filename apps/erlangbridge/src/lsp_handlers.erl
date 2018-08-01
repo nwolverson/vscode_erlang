@@ -62,7 +62,8 @@ textDocument_didClose(Socket, Params) ->
 
 textDocument_didSave(Socket, Params) ->
     File = lsp_utils:file_uri_to_file(mapmapget(textDocument, uri, Params)),
-    gen_lsp_config_server:autosave() andalso file_contents_update(Socket, File, undefined).
+    gen_lsp_config_server:autosave() andalso file_contents_update(Socket, File, undefined),
+    gen_lsp_config_server:compileOnSave() andalso lsp_syntax:compile_source_file(File).
 
 textDocument_didChange(Socket, Params) ->
     File = lsp_utils:file_uri_to_file(mapmapget(textDocument, uri, Params)),

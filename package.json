@@ -200,6 +200,12 @@
 					"title": "Enable/Disable Erlang Linting",
 					"description": "Enable/Disable dynamic validation of opened Erlang source files."
 				},
+				"erlang.compileOnSave": {
+					"type": "boolean",
+					"default": true,
+					"title": "Compile on Save",
+					"description": "Compile and update the generated .beam file on save (if no errors)."
+				},
 				"erlang.codeLensEnabled": {
 					"type": "boolean",
 					"default": false,
